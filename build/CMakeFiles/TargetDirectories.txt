@@ -1,7 +1,0 @@
-/home/wkw/DistributeStorageSystem/ring_buffer/build/CMakeFiles/rebuild_cache.dir
-/home/wkw/DistributeStorageSystem/ring_buffer/build/CMakeFiles/edit_cache.dir
-/home/wkw/DistributeStorageSystem/ring_buffer/build/CMakeFiles/test.dir
-/home/wkw/DistributeStorageSystem/ring_buffer/build/tests/CMakeFiles/edit_cache.dir
-/home/wkw/DistributeStorageSystem/ring_buffer/build/tests/CMakeFiles/test.dir
-/home/wkw/DistributeStorageSystem/ring_buffer/build/tests/CMakeFiles/rebuild_cache.dir
-/home/wkw/DistributeStorageSystem/ring_buffer/build/tests/CMakeFiles/ring_buf_test.dir
