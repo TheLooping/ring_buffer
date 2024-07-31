@@ -116,9 +116,10 @@ namespace ring_buf {
             cur_node->SetData(data[i]);
             ++push_count;
         }
+        uint32_t expected_tail;
         do {
-            uint32_t expected_tail = old_head;         
-        } while (!prod_tail_.compare_exchange_weak(expected_tail, new_head, std::memory_order_release, std::memory_order_relaxed)) 
+            expected_tail = old_head;         
+        } while (!prod_tail_.compare_exchange_weak(expected_tail, new_head, std::memory_order_release, std::memory_order_relaxed)); 
         size_.fetch_add(size, std::memory_order_relaxed);
         return push_count;
     }
@@ -145,10 +146,10 @@ namespace ring_buf {
         } while (!cons_head_.compare_exchange_weak(old_head, new_head, std::memory_order_release, std::memory_order_relaxed));
 
         size = std::min(size, size_.load(std::memory_order_relaxed));
-        size = std::min(size, burstMaxSize);
+        size = size > burstMaxSize ? burstMaxSize : size;
 
         if (data == nullptr) {
-            data = std::make_shared<T[]>(new T[size]);
+            data = std::shared_ptr<T[]>(new T[size]);
         }
 
         uint32_t pop_count = 0;
@@ -157,9 +158,10 @@ namespace ring_buf {
             data[i] = cur_node->data;
             ++pop_count;
         }
+        uint32_t expected_tail;
         do {
-            uint32_t expected_tail = old_head;
-        }while (!cons_tail_.compare_exchange_weak(expected_tail, new_head, std::memory_order_release, std::memory_order_relaxed)) 
+            expected_tail = old_head;
+        }while (!cons_tail_.compare_exchange_weak(expected_tail, new_head, std::memory_order_release, std::memory_order_relaxed)); 
         size_.fetch_sub(size, std::memory_order_relaxed);
         return pop_count;
     }

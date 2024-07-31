@@ -1,0 +1,28 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+../include/ring_buf.h
+vector
+-
+atomic
+-
+cstddef
+-
+memory
+-
+iostream
+-
+errno.h
+-
+
+/home/wkw/DistributeStorageSystem/ring_buffer/tests/ring_buf_test.cc
+gtest/gtest.h
+-
+ring_buf.h
+/home/wkw/DistributeStorageSystem/ring_buffer/tests/ring_buf.h
+

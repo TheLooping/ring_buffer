@@ -61,3 +61,9 @@ TEST_F(RingBufTest, OverflowExpand) {
         EXPECT_EQ(data.get()[i], i);
     }
 }
+
+
+int main(int argc, char **argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
