@@ -7,9 +7,12 @@
 #include <cstddef>
 #include <memory>
 #include <iostream>
+#include <iomanip>
 #include <errno.h>
 #define CACHE_LINE_SIZE 64
-namespace ring_buf {
+
+
+namespace ring_buf {    
     template <typename T> class RingBuf
     {
         private:
@@ -18,39 +21,39 @@ namespace ring_buf {
             explicit RingBuf(uint32_t capacity);
             RingBuf(const RingBuf&) = delete;
             RingBuf& operator=(const RingBuf&) = delete;
-
+            ~RingBuf();
             // Push data
             // Requires: size() < capacity(); atomic operation.
-            int push(const T* data);
+            int Push(const T* data);
 
             // Batch push
             // Requires: size() + data.size() < capacity(); atomic operation.
-            int push(const T* data, uint32_t size);
+            int Push(const T* data, uint32_t size);
 
             // Pop data
             // Requires: size() > 0; atomic operation.
-            int pop(std::shared_ptr<T[]>& data);
+            int Pop(std::shared_ptr<T[]>& data);
 
             // Batch pop
             // Requires: size() >= size; atomic operation.
-            int pop(std::shared_ptr<T[]>& data, uint32_t size);
+            int Pop(std::shared_ptr<T[]>& data, uint32_t size);
 
             // Try push data
-            int try_push(const T* data);
+            int TryPush(const T* data);
 
             // Try batch push
-            int try_push(const T* data, uint32_t size);
+            int TryPush(const T* data, uint32_t size);
 
             // Try pop data
-            int try_pop(std::shared_ptr<T[]>& data);
+            int TryPop(std::shared_ptr<T[]>& data);
 
             // Try batch pop
-            int try_pop(std::shared_ptr<T[]>& data, uint32_t size);
+            int TryPop(std::shared_ptr<T[]>& data, uint32_t size);
 
         private:
             enum { kMinSize = 16 };
             enum { kMaxSize = 1204 };
-            enum { burstMaxSize = 16 };
+            enum { burstMaxSize = 32 };
             enum { expansionFactor = 2 };
             static constexpr double expansionThreshold = 0.1;
             inline bool IsEmpty() const { return size_.load() == 0; }
@@ -68,7 +71,26 @@ namespace ring_buf {
             alignas(CACHE_LINE_SIZE) std::atomic<uint32_t> cons_head_;
             alignas(CACHE_LINE_SIZE) std::atomic<uint32_t> cons_tail_;            
             alignas(CACHE_LINE_SIZE) std::atomic<bool> is_in_expanding_;
-            std::shared_ptr<std::vector<Node>> queue_;
+            std::unique_ptr<std::vector<Node>> queue_;
+
+            inline void PrintStaus() {
+                std::cout<<"size:"<<size_.load()<<std::endl;
+                std::cout<<"capacity:"<<capacity_.load()<<std::endl;
+                std::cout<<"cons_head:"<<cons_head_.load()<<std::endl;
+                std::cout<<"cons_tail:"<<cons_tail_.load()<<std::endl;
+                std::cout<<"prod_head:"<<prod_head_.load()<<std::endl;
+                std::cout<<"prod_tail:"<<prod_tail_.load()<<std::endl;
+                std::cout<<"data:"<<std::endl;
+                // 打印表头
+                std::cout << std::setw(10) << "Index" << std::setw(10) << "Data" << std::endl;                
+                // 分隔线
+                std::cout << std::setw(10) << "---------" << std::setw(10) << "---------" << std::endl;
+                // 打印索引和数据
+                for(int i = 0; i < capacity_.load(); i++) {            
+                    std::cout << std::setw(10) << i << std::setw(10) << (*queue_)[i].data << std::endl;
+                }
+
+            }
     };
 
     template <typename T> struct RingBuf<T>::Node {
@@ -80,8 +102,8 @@ namespace ring_buf {
     template <typename T> 
     RingBuf<T>::RingBuf(uint32_t capacity) 
         : size_(0),
-          prod_head_(1),
-          prod_tail_(1),
+          prod_head_(0),
+          prod_tail_(0),
           cons_head_(0),
           cons_tail_(0),
           is_in_expanding_(false),
@@ -89,18 +111,20 @@ namespace ring_buf {
         if (capacity > kMaxSize) {
             perror("capacity is too large");
         }
-        queue_ = std::make_shared<std::vector<Node>>();
+        queue_ = std::make_unique<std::vector<Node>>();
         queue_->reserve(capacity);
     }
     
     template <typename T> 
-    int RingBuf<T>::push(const T* data, uint32_t size) {
+    int RingBuf<T>::Push(const T* data, uint32_t size) {
         while (is_in_expanding_.load()){
             continue;
         }
-        while(IsFull() || size > capacity_.load() - size_.load()) {
-            if (!is_in_expanding_.load()) {                
+        while(IsFull() || size >= capacity_.load() - size_.load()) {
+            if (!is_in_expanding_.load()) {  
+                // std::cout<<"TryExpand before:"<<capacity_.load()<<std::endl;        
                 TryExpand();
+                // std::cout<<"TryExpand after:"<<capacity_.load()<<std::endl;    
             }
         }
         uint32_t old_head;
@@ -121,16 +145,17 @@ namespace ring_buf {
             expected_tail = old_head;         
         } while (!prod_tail_.compare_exchange_weak(expected_tail, new_head, std::memory_order_release, std::memory_order_relaxed)); 
         size_.fetch_add(size, std::memory_order_relaxed);
+        PrintStaus();
         return push_count;
     }
 
     template <typename T>
-    int RingBuf<T>::push(const T* data) {
-        return push(data, 1);
+    int RingBuf<T>::Push(const T* data) {
+        return Push(data, 1);
     }
 
     template <typename T>
-    int RingBuf<T>::pop(std::shared_ptr<T[]>& data, uint32_t size) {
+    int RingBuf<T>::Pop(std::shared_ptr<T[]>& data, uint32_t size) {
         while (IsEmpty()) {
             return 0;
         }        
@@ -163,38 +188,40 @@ namespace ring_buf {
             expected_tail = old_head;
         }while (!cons_tail_.compare_exchange_weak(expected_tail, new_head, std::memory_order_release, std::memory_order_relaxed)); 
         size_.fetch_sub(size, std::memory_order_relaxed);
+        // std::cout<<"pop_count:"<<pop_count<<std::endl;
+        PrintStaus();
         return pop_count;
     }
         
     template <typename T>
-    int RingBuf<T>::pop(std::shared_ptr<T[]>& data) {
-        return pop(data, 1);
+    int RingBuf<T>::Pop(std::shared_ptr<T[]>& data) {
+        return Pop(data, 1);
     }
 
     template <typename T>
-    int RingBuf<T>::try_push(const T* data, uint32_t size) {
+    int RingBuf<T>::TryPush(const T* data, uint32_t size) {
         if (is_in_expanding_.load()) {
             return 0; // Buffer is expanding, wait for the expanding to complete
         }
-        return push(data, size); // Call the existing push method
+        return Push(data, size); // Call the existing push method
     }
 
     template <typename T>
-    int RingBuf<T>::try_push(const T* data) {
-        return try_push(data, 1);
+    int RingBuf<T>::TryPush(const T* data) {
+        return TryPush(data, 1);
     }
 
     template <typename T>
-    int RingBuf<T>::try_pop(std::shared_ptr<T[]>& data, uint32_t size) {
+    int RingBuf<T>::TryPop(std::shared_ptr<T[]>& data, uint32_t size) {
         if (IsEmpty()) {
             return 0; // Buffer is empty
         }
-        return pop(data, size); // Call the existing pop method
+        return Pop(data, size); // Call the existing pop method
     }
 
     template <typename T>
-    int RingBuf<T>::try_pop(std::shared_ptr<T[]>& data) {
-        return try_pop(data, 1);
+    int RingBuf<T>::TryPop(std::shared_ptr<T[]>& data) {
+        return TryPop(data, 1);
     }
 
     template <typename T>
@@ -203,7 +230,7 @@ namespace ring_buf {
         if (!is_in_expanding_.compare_exchange_weak(expected_flag, true, std::memory_order_release, std::memory_order_relaxed)) {
             return;
         }
-        std::shared_ptr<std::vector<Node>> new_queue = std::make_shared<std::vector<Node>>();
+        std::unique_ptr<std::vector<Node>> new_queue = std::make_unique<std::vector<Node>>();
         new_queue->reserve(capacity_.load() * expansionFactor);
 
         uint32_t prod_head, prod_tail, cons_head, cons_tail;
@@ -215,15 +242,26 @@ namespace ring_buf {
 
         // 复制数据
         uint32_t expand_len = new_queue->capacity() - capacity_.load();
-        if (prod_tail_.load() > cons_head_.load()) {
+        uint32_t new_cons_head, new_cons_tail;
+        if (prod_tail_.load() >= cons_head_.load()) {
             // 无环，连续，直接复制
-            std::copy(queue_->begin(), queue_->end(), new_queue->begin());
+            for(int i = 0; i < capacity_.load(); i++) {
+                (*new_queue)[i].data = (*queue_)[i].data;
+            }
+            new_cons_head = cons_head_.load();
+            new_cons_tail = cons_tail_.load();
+            // std::cout<<"无环，连续，直接复制"<<std::endl;
         } else {
             // 有环，分开复制
-            std::copy(queue_->begin(), queue_->begin() + prod_head_.load(), new_queue->begin());
+            for(int i = 0; i < prod_head_.load(); i++) {
+                (*new_queue)[i].data = (*queue_)[i].data;
+            }
             cons_tail = cons_tail_.load();
-            uint32_t new_cons_tail = cons_tail + expand_len;
-            std::copy(queue_->begin() + cons_tail, queue_->end(), new_queue->begin() + new_cons_tail);
+            new_cons_head = cons_head_.load() + expand_len;
+            new_cons_tail = cons_tail + expand_len;            
+            for(int i = cons_tail; i < capacity_.load(); i++) {
+                (*new_queue)[i + expand_len].data = (*queue_)[i].data;
+            }// std::cout<<"有环，分开复制"<<std::endl;
         }
 
         do {
@@ -235,8 +273,8 @@ namespace ring_buf {
         do {
             cons_tail = cons_tail_.load();
             cons_head = cons_head_.load();
-        } while ((!cons_tail_.compare_exchange_weak(cons_tail, cons_tail + expand_len))
-                || (!cons_head_.compare_exchange_weak(cons_head, cons_head + expand_len)));
+        } while ((!cons_tail_.compare_exchange_weak(cons_tail, new_cons_tail))
+                || (!cons_head_.compare_exchange_weak(cons_head, new_cons_head)));
         capacity_.store(new_queue->capacity(), std::memory_order_release);
         queue_ = std::move(new_queue);
         is_in_expanding_.store(false, std::memory_order_release);
