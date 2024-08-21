@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <iostream>
 #include <thread>
+#include <cstdlib>
 
 #define RING_BUF_SUCCESS 0
 #define RING_BUF_PUSH_ERROR -1
@@ -57,8 +58,10 @@ namespace ring_buf_
         RingBuf(const RingBuf &) = delete;
         RingBuf &operator=(const RingBuf &) = delete;
 
-        int Push(const T *data, uint32_t size);
+        int Push(const T *data, uint32_t size);        
+        int Push(const std::vector<T>& data);
         int Pop(T *data, uint32_t size);
+        int Pop(std::vector<T>& data);
         void PrintRing();
 
     private:
@@ -87,6 +90,8 @@ namespace ring_buf_
         inline bool IsEmpty() const { return size_.load() == 0; }
         inline bool IsNearlyFull() const { return size_.load() > capacity_threshold_.load(); }
         int rearrange_circular_array(const T *old_array, T *new_array, uint32_t old_start, uint32_t old_end, uint32_t old_capacity, uint32_t new_capacity, uint32_t new_start);
+        int reset_circular_array(T *array, uint32_t start, uint32_t end, uint32_t capacity);
+        void SimulateTimeWait();
         int Expand();
 
         std::atomic<uint32_t> size_;
@@ -125,12 +130,15 @@ namespace ring_buf_
         cons_tail_.store(0);
         in_expanding_.store(false);
         unique_expand_flag_.store(false);
+        workers_.store(0);
+        capacity_threshold_.store(capacity * expansionThreshold);
         buffer_ = std::unique_ptr<T[]>(new T[capacity]);
     }
 
     template <typename T>
     int RingBuf<T>::Push(const T *data, uint32_t size)
     {
+        std::cout << "Push test ------------->>>>>>>>>>>>" << std::endl;
         while (in_expanding_.load())
         {
             sem_.wait();
@@ -141,7 +149,6 @@ namespace ring_buf_
             int new_cap = Expand();
             if (new_cap > kMaxSize * expansionFactor)
             {
-                std::cout << "The buffer capacity exceeds the maximum value. " << std::endl;
                 break;
             }
         }
@@ -162,6 +169,7 @@ namespace ring_buf_
         // std::copy(data, data + size, buffer_ + prod_tail_.load());
         T *raw_buffer = buffer_.get();
         rearrange_circular_array(data, raw_buffer, 0, size, size, capacity_.load(), old_prod_head);
+        // SimulateTimeWait();
         // prod_tail_.store((prod_tail_.load() + size) % capacity_.load());
         uint32_t expected_prod_tail, desire_prod_tail;
         do
@@ -176,7 +184,13 @@ namespace ring_buf_
         {
             return RING_BUF_PUSH_ERROR;
         }
+        std::cout << "Push end <<<<<<<<<<<<<<<-------------" << std::endl;
         return size;
+    }
+
+    template <typename T>
+    int RingBuf<T>::Push(const std::vector<T>& data) {
+        return Push(data.data(), data.size());
     }
 
     template <typename T>
@@ -206,25 +220,23 @@ namespace ring_buf_
             new_cons_head = (old_cons_head + fact_pop_size) % capacity_.load();
         } while (!cons_head_.compare_exchange_weak(old_cons_head, new_cons_head));
 
-        while (cons_tail_.load() != old_cons_head)
-        {
-            // std::this_thread::yield();
-            continue;
-        }
-
-        // 从 cons_tail_ 处读取数据
+        // 从 cons_head_ 处开始读取数据
         T *raw_buffer = buffer_.get();
         int copy_num = rearrange_circular_array(raw_buffer, data, old_cons_head, new_cons_head, capacity_.load(), size, 0);
-
+        reset_circular_array(raw_buffer, old_cons_head, new_cons_head, capacity_.load());
+        // SimulateTimeWait();
         if (copy_num != fact_pop_size)
         {
             std::cout << "maybe wrong pop. desire fact_pop_size:" << fact_pop_size << "copy_num" << copy_num << std::endl;
             return RING_BUF_POP_ERROR;
         }
+
+
         uint32_t expected_cons_tail, desire_cons_tail;
         do
         {
-            expected_cons_tail = cons_tail_.load();
+            // expected_cons_tail = cons_tail_.load();
+            expected_cons_tail = old_cons_head;
             desire_cons_tail = (expected_cons_tail + fact_pop_size) % capacity_.load();
         } while (!cons_tail_.compare_exchange_weak(expected_cons_tail, desire_cons_tail));
 
@@ -239,8 +251,13 @@ namespace ring_buf_
     }
 
     template <typename T>
+    int RingBuf<T>::Pop(std::vector<T>& data) {
+        return Pop(data.data(), data.size());
+    }
+    template <typename T>
     int RingBuf<T>::Expand()
     {
+        std::cout << ">>>>>>>>>>>>>>>>>>>>>>>>> Expand start <<<<<<<<<<<<<<<<<<<<<<<<<<<" << std::endl;
         bool expected_state = false;
         if (!unique_expand_flag_.compare_exchange_weak(expected_state, true))
         {
@@ -303,6 +320,7 @@ namespace ring_buf_
             std::cout << "in_expanding_ from true to false, wrong!" << std::endl;
         }
         sem_.signal_all();
+        std::cout << ">>>>>>>>>>>>>>>>>>>>>>>>> Expand end <<<<<<<<<<<<<<<<<<<<<<<<<<<" << std::endl;
         return capacity_.load();
     }
 
@@ -313,7 +331,7 @@ namespace ring_buf_
         int size = (old_end >= old_start) ? (old_end - old_start) : (old_capacity - old_start + old_end);
 
         // 如果新数组的容量不足以容纳旧数组中的元素，则进行边界检查
-        if (size > new_capacity || new_start + size > new_capacity)
+        if (size > new_capacity)
         {
             return RING_BUF_CAP_NOT_ENOUGH; // 返回 -1 表示新数组的容量不足
         }
@@ -322,19 +340,33 @@ namespace ring_buf_
         if (old_start <= old_end)
         {
             // 直接复制从 old_start 到 old_end 的数据到新数组的指定起始位置
-            if (new_start + size < new_capacity)
+            if (new_start + size <= new_capacity)
             {
                 std::copy(old_array + old_start, old_array + old_end, new_array + new_start);
+            }
+            else
+            {
+                uint32_t first_part_size = new_capacity - new_start;
+                uint32_t second_part_size = size - first_part_size;
+                std::copy(old_array + old_start, old_array + old_start + first_part_size, new_array + new_start);
+                std::copy(old_array + old_start + first_part_size, old_array + old_end, new_array);
             }
         }
         else
         {
-            if (new_start + size < new_capacity)
+            if (new_start + size <= new_capacity)
             {
                 // 先复制从 old_start 到 old_capacity 的部分到新数组的指定起始位置
                 std::copy(old_array + old_start, old_array + old_capacity, new_array + new_start);
                 // 再复制从 0 到 old_end 的部分到新数组的指定位置
                 std::copy(old_array, old_array + old_end, new_array + new_start + (old_capacity - old_start));
+            }
+            else
+            {
+                std::unique_ptr<T[]> temp_array(new T[size]);
+                T *raw_temp_array = temp_array.get();
+                rearrange_circular_array(old_array, raw_temp_array, old_start, old_end, old_capacity, size, 0);
+                rearrange_circular_array(raw_temp_array, new_array, 0, size, size, new_capacity, new_start);
             }
         }
 
@@ -342,12 +374,33 @@ namespace ring_buf_
     }
 
     template <typename T>
+    int RingBuf<T>::reset_circular_array(T *array, uint32_t start, uint32_t end, uint32_t capacity){
+        if (start <= end)
+        {
+            std::fill(array + start, array + end, 0);
+        }
+        else
+        {
+            std::fill(array + start, array + capacity, 0);
+            std::fill(array, array + end, 0);
+        }
+        return 0;
+    }
+
+
+    template <typename T>
+    void RingBuf<T>::SimulateTimeWait()
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(rand() & 0x03ff)); // 模拟生产者生产数据的时间
+    }
+    template <typename T>
     void RingBuf<T>::PrintRing()
     {
         T *raw_buffer = buffer_.get();
         uint32_t buf_capacity = capacity_.load();
 
         // 打印整个缓冲区内容
+        std::cout <<  "********************* PrintRing *********************" << std::endl;
         for (uint32_t i = 0; i < buf_capacity; ++i)
         {
             std::cout << raw_buffer[i];
@@ -369,6 +422,7 @@ namespace ring_buf_
             }
             std::cout << std::endl;
         }
+        std::cout <<  "************************ END ************************\n" << std::endl;
     }
 
 }

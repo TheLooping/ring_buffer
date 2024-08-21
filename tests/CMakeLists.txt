@@ -1,18 +1,13 @@
-# 假设你使用 Google Test 库
-# 需要提前安装 Google Test 或者下载其源代码，并指定其路径
 
-# 找到 Google Test
-find_package(GTest REQUIRED)
+# 添加Google Test
+include_directories(${GTEST_INCLUDE_DIRS})
+link_directories(${GTEST_LIBRARY_DIRS})
 
-# 将测试源文件添加到测试目标中
-file(GLOB TEST_SOURCES "tests/*.cpp")
+# 添加测试文件
+add_executable(ring_buffer_test ring_buffer_test.cpp)
 
-# 添加测试可执行文件
-add_executable(run_tests ${TEST_SOURCES})
+# 链接Google Test库
+target_link_libraries(ring_buffer_test ${GTEST_LIBRARIES} pthread)
 
-# 链接 Google Test 库和 pthread 库
-target_link_libraries(run_tests GTest::GTest GTest::Main pthread)
-
-# 添加测试到 CTest
-enable_testing()
-add_test(NAME ring_buffer_tests COMMAND run_tests)
+# 添加测试到CTest
+add_test(NAME RingBufferTest COMMAND ring_buffer_test)
